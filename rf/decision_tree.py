@@ -20,7 +20,7 @@ class Node():
         self.store_probs = store_probs
     
     def is_leaf(self) -> bool:
-        return self.value is not None
+        return self.left is None and self.right is None
 
 class DecisionTree():
     def __init__(
@@ -49,7 +49,7 @@ class DecisionTree():
             return 0.0
         _, counts = np.unique(y, return_counts=True)
         probs = counts / counts.sum()
-        entropy = -np.sum(p * np.log2(p) for p in probabilities if p > 0)
+        entropy = -np.sum(p * np.log2(p) for p in probs if p > 0)
         return float(entropy)
 
     def _best_split(
@@ -95,21 +95,25 @@ class DecisionTree():
                     right_impurity = self._gini_impurity(right_counts)
 
                 weighted_impurity = (n_left/n_total) * left_impurity + (n_right/n_total) * right_impurity
+
                 if weighted_impurity < best_impurity:
                     best_impurity = weighted_impurity
                     best_feature = feature_index
                     best_threshold = threshold
 
-                return best_feature, best_threshold, best_impurity
+        return best_feature, best_threshold, best_impurity
 
-    def _create_leaf_node(self):
+    def _create_leaf_node(self, y: np.ndarray):
+        count_vector = np.zeros(len(self.classes), dtype=int)
         values, counts = np.unique(y, return_counts=True)
+        for v, c in zip(values, counts):
+            idx = self.class_to_index[v]
+            count_vector[idx] = c
         if self.store_probs == True:
             probs = counts / counts.sum()
             return Node(value=probs, store_probs=True)
         else:
-            value = values[np.argmax(counts)]
-            return Node(value=value, store_probs=False)
+            return Node(value=count_vector, store_probs=False)
 
     def _build_tree(
         self,
@@ -125,12 +129,11 @@ class DecisionTree():
             n_samples < self.min_samples_split or
             n_classes == 1
         ):
-            self._create_leaf_node()
+            return self._create_leaf_node(y)
 
         # Create subsets for recursion and find the best split
         n_features_to_consider = self.n_features or n_features
         
-        # TODO: Check the credibility of this function
         feature_indices = np.random.choice(
             X.shape[1], self.n_features, replace=False
         )
@@ -138,7 +141,7 @@ class DecisionTree():
 
         # If no valid split is found
         if feature_index is None:
-            self._create_leaf_node()
+            return self._create_leaf_node(y)
 
         # Split the data according to _best_split
         left_mask = X[:, feature_index] <= threshold
@@ -166,20 +169,21 @@ class DecisionTree():
         else:
             return self._traverse_tree(x, node.right)
 
-    def fit(self, X:pd.DataFrame , y: pd.Series) -> None:
-        X = X.to_numpy()
-        y = y.to_numpy()
+    def fit(self, X_pd:pd.DataFrame , y_pd: pd.Series) -> None:
+        X = X_pd.to_numpy()
+        y = y_pd.to_numpy()
         self.classes = np.unique(y)
+        self.class_to_index = {c: i for i, c in enumerate(self.classes)}
 
         n_samples, n_features = X.shape
         self.n_features = self.n_features or n_features     # eliminates n_features == None
 
         self.root = self._build_tree(X, y)
 
-    # TODO: Determine the argument types of return and X
     def predict(self, X:pd.DataFrame) -> np.ndarray:
         X = X.to_numpy()
         predictions = [self._traverse_tree(x, self.root) for x in X]
+        predictions = [np.argmax(p) for p in predictions]
         return np.array(predictions)
 
     def predict_proba(self, X: np.ndarray) -> np.ndarray:
