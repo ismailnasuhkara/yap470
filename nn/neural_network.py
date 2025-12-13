@@ -11,7 +11,7 @@ from torch.optim.lr_scheduler import ReduceLROnPlateau, StepLR
 class NeuralNetwork:
     def __init__(self):
         self.model = nn.Sequential(
-            nn.Linear(22, 32),
+            nn.Linear(20, 32),
             nn.Dropout(0.3),
             nn.ReLU(),
             nn.Linear(32, 16),
@@ -20,10 +20,7 @@ class NeuralNetwork:
             nn.Linear(16, 16),
             nn.Dropout(0.3),
             nn.ReLU(),
-            nn.Linear(16, 8),
-            nn.Dropout(0.3),
-            nn.ReLU(),
-            nn.Linear(8, 1)
+            nn.Linear(16, 1)
         )
 
         self.dataset_path = "../dataset/diabetes_binary_5050split_health_indicators_BRFSS2023.csv"
@@ -31,7 +28,7 @@ class NeuralNetwork:
     def load_data(self):
         dataset = pd.read_csv(self.dataset_path).values.astype("float32")
 
-        X = torch.tensor(dataset[:, 1:])
+        X = torch.tensor(dataset[:, 1:-2])
         y = torch.tensor(dataset[:, 0]).unsqueeze(1)
 
         num_samples = len(X)
