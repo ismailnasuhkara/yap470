@@ -5,7 +5,7 @@ import torch.nn as nn
 import torch.optim as optim
 import matplotlib.pyplot as plt
 import seaborn as sns
-from sklearn.metrics import precision_score, recall_score, f1_score, confusion_matrix
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix, roc_auc_score, roc_curve
 
 class NeuralNetwork:
     def __init__(self):
@@ -109,38 +109,144 @@ class NeuralNetwork:
         if best_model_state is not None:
             self.model.load_state_dict(best_model_state)
 
-    def evaluate(self):
+    def evaluate(self, thresholds=[0.3, 0.4, 0.5, 0.6, 0.7]):
         self.model.eval()
-        all_preds = []
+        all_probs = []
         all_labels = []
 
         with torch.no_grad():
             for X_batch, y_batch in self.test_loader:
                 logits = self.model(X_batch)
                 probs = torch.sigmoid(logits)
-                preds = (probs >= 0.5).float()
 
-                all_preds.append(preds)
+                all_probs.append(probs)
                 all_labels.append(y_batch)
 
-        all_preds = torch.cat(all_preds).cpu().numpy()
-        all_labels = torch.cat(all_labels).cpu().numpy()
+        all_probs = torch.cat(all_probs).cpu().numpy().ravel()
+        all_labels = torch.cat(all_labels).cpu().numpy().ravel()
 
-        accuracy = (all_preds == all_labels).mean()
-        precision = precision_score(all_labels, all_preds)
-        recall = recall_score(all_labels, all_preds)
-        f1 = f1_score(all_labels, all_preds)
+        results = []
+        for threshold in thresholds:
+            preds = (all_probs >= threshold).astype(int)
 
-        print("\n----- TEST METRICS -----")
-        print("Accuracy :", accuracy)
-        print("Precision:", precision)
-        print("Recall   :", recall)
-        print("F1 Score :", f1)
+            accuracy = accuracy_score(all_labels, preds)
+            precision = precision_score(all_labels, preds, zero_division=0)
+            recall = recall_score(all_labels, preds, zero_division=0)
+            f1 = f1_score(all_labels, preds, zero_division=0)
 
-        cm = confusion_matrix(all_labels, all_preds)
-        plt.figure(figsize=(5,4))
-        sns.heatmap(cm, annot=True, fmt="d", cmap="Blues")
-        plt.xlabel("Predicted")
-        plt.ylabel("Actual")
-        plt.title("Confusion Matrix")
+            tn, fp, fn, tp = confusion_matrix(all_labels, preds).ravel()
+            specificity = tn / (tn + fp) if (tn + fp) > 0 else 0
+            
+            results.append({
+                'Threshold': threshold,
+                'Accuracy': accuracy,
+                'Precision': precision,
+                'Recall': recall,
+                'F1-Score': f1,
+                'Specificity': specificity,
+                'TP': tp,
+                'TN': tn,
+                'FP': fp,
+                'FN': fn
+            })
+        
+        results_df = pd.DataFrame(results)
+        
+        roc_auc = roc_auc_score(all_labels, all_probs)
+        
+        print("\n" + "="*80)
+        print("EVALUATION RESULTS ON TEST SET")
+        print("="*80)
+        print(f"\nROC-AUC Score: {roc_auc:.4f}\n")
+        print(results_df.to_string(index=False))
+        print("="*80 + "\n")
+        
+        return results_df, all_probs, all_labels, roc_auc
+    
+    def plot_threshold_analysis(self, results_df, all_probs=None, all_labels=None):
+        plot_roc = all_probs is not None and all_labels is not None
+        
+        if plot_roc:
+            fig, axes = plt.subplots(2, 3, figsize=(18, 10))
+        else:
+            fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+            axes = axes.flatten()
+        
+        # Plot 1: Main metrics
+        ax1 = axes[0, 0] if plot_roc else axes[0]
+        metrics = ['Accuracy', 'Precision', 'Recall', 'F1-Score']
+        for metric in metrics:
+            ax1.plot(results_df['Threshold'], results_df[metric], marker='o', label=metric)
+        ax1.set_xlabel('Threshold')
+        ax1.set_ylabel('Score')
+        ax1.set_title('Performance Metrics vs Threshold')
+        ax1.legend()
+        ax1.grid(True, alpha=0.3)
+        
+        # Plot 2: Precision-Recall tradeoff
+        ax2 = axes[0, 1] if plot_roc else axes[1]
+        ax2.plot(results_df['Threshold'], results_df['Precision'], marker='o', label='Precision', color='blue')
+        ax2.plot(results_df['Threshold'], results_df['Recall'], marker='s', label='Recall', color='red')
+        ax2.plot(results_df['Threshold'], results_df['Specificity'], marker='^', label='Specificity', color='green')
+        ax2.set_xlabel('Threshold')
+        ax2.set_ylabel('Score')
+        ax2.set_title('Precision-Recall-Specificity Tradeoff')
+        ax2.legend()
+        ax2.grid(True, alpha=0.3)
+        
+        # Plot 3: Confusion matrix components
+        ax3 = axes[1, 0] if plot_roc else axes[2]
+        width = 0.02
+        x = results_df['Threshold']
+        ax3.bar(x - 1.5*width, results_df['TP'], width, label='True Positive', color='green')
+        ax3.bar(x - 0.5*width, results_df['TN'], width, label='True Negative', color='lightgreen')
+        ax3.bar(x + 0.5*width, results_df['FP'], width, label='False Positive', color='orange')
+        ax3.bar(x + 1.5*width, results_df['FN'], width, label='False Negative', color='red')
+        ax3.set_xlabel('Threshold')
+        ax3.set_ylabel('Count')
+        ax3.set_title('Confusion Matrix Components')
+        ax3.legend()
+        ax3.grid(True, alpha=0.3, axis='y')
+        
+        # Plot 4: F1-Score highlighting best threshold
+        ax4 = axes[1, 1] if plot_roc else axes[3]
+        ax4.plot(results_df['Threshold'], results_df['F1-Score'], marker='o', linewidth=2, color='purple')
+        best_idx = results_df['F1-Score'].idxmax()
+        best_threshold = results_df.loc[best_idx, 'Threshold']
+        best_f1 = results_df.loc[best_idx, 'F1-Score']
+        ax4.scatter([best_threshold], [best_f1], color='red', s=200, zorder=5, label=f'Best: {best_threshold}')
+        ax4.set_xlabel('Threshold')
+        ax4.set_ylabel('F1-Score')
+        ax4.set_title('F1-Score vs Threshold (Best Threshold Highlighted)')
+        ax4.legend()
+        ax4.grid(True, alpha=0.3)
+        
+        # Plot 5: ROC Curve
+        if plot_roc:
+            ax5 = axes[0, 2]
+            fpr, tpr, thresholds_roc = roc_curve(all_labels, all_probs)
+            roc_auc = roc_auc_score(all_labels, all_probs)
+            
+            ax5.plot(fpr, tpr, color='darkorange', lw=2, label=f'ROC curve (AUC = {roc_auc:.4f})')
+            ax5.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--', label='Random Classifier')
+            ax5.set_xlim([0.0, 1.0])
+            ax5.set_ylim([0.0, 1.05])
+            ax5.set_xlabel('False Positive Rate')
+            ax5.set_ylabel('True Positive Rate')
+            ax5.set_title('ROC Curve')
+            ax5.legend(loc="lower right")
+            ax5.grid(True, alpha=0.3)
+            
+            # Plot 6: Threshold vs TPR/FPR
+            ax6 = axes[1, 2]
+            step = max(1, len(thresholds_roc) // 50)
+            ax6.plot(thresholds_roc[::step], tpr[::step], marker='o', label='True Positive Rate', markersize=4)
+            ax6.plot(thresholds_roc[::step], fpr[::step], marker='s', label='False Positive Rate', markersize=4)
+            ax6.set_xlabel('Threshold')
+            ax6.set_ylabel('Rate')
+            ax6.set_title('TPR and FPR vs Threshold')
+            ax6.legend()
+            ax6.grid(True, alpha=0.3)
+        
+        plt.tight_layout()
         plt.show()
