@@ -6,15 +6,24 @@ import torch.optim as optim
 import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix, roc_auc_score, roc_curve
+from torch.optim.lr_scheduler import ReduceLROnPlateau, StepLR
 
 class NeuralNetwork:
     def __init__(self):
         self.model = nn.Sequential(
             nn.Linear(22, 32),
+            nn.Dropout(0.3),
             nn.ReLU(),
             nn.Linear(32, 16),
+            nn.Dropout(0.3),
             nn.ReLU(),
-            nn.Linear(16, 1)
+            nn.Linear(16, 16),
+            nn.Dropout(0.3),
+            nn.ReLU(),
+            nn.Linear(16, 8),
+            nn.Dropout(0.3),
+            nn.ReLU(),
+            nn.Linear(8, 1)
         )
 
         self.dataset_path = "../dataset/diabetes_binary_5050split_health_indicators_BRFSS2023.csv"
@@ -55,7 +64,10 @@ class NeuralNetwork:
 
     def train(self, epochs=5, learning_rate=0.001, patience=5):
         criterion = nn.BCEWithLogitsLoss()
-        optimizer = optim.Adam(self.model.parameters(), lr=learning_rate)
+        optimizer = optim.Adam(self.model.parameters(), lr=learning_rate, weight_decay=0.0001)
+
+        scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=3)
+
 
         best_val_loss = float('inf')
         wait = 0
@@ -92,6 +104,8 @@ class NeuralNetwork:
                     val_loss += loss.item() * X_batch.size(0)
 
             val_loss /= len(self.val_loader.dataset)
+
+            scheduler.step(val_loss)
 
             print(f"Epoch {epoch+1}/{epochs} | Train Loss: {avg_loss:.4f} | "
                   f"Train Acc: {train_acc:.2f}% | Val Loss: {val_loss:.4f}")
@@ -153,7 +167,7 @@ class NeuralNetwork:
         results_df = pd.DataFrame(results)
         
         roc_auc = roc_auc_score(all_labels, all_probs)
-        
+
         print("\n" + "="*80)
         print("EVALUATION RESULTS ON TEST SET")
         print("="*80)
