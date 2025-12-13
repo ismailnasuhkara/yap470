@@ -119,3 +119,22 @@ class RandomForest():
 
         return results
 
+<<<<<<< HEAD
+=======
+    def get_params(self, deep=True):
+        """Get parameters for this estimator (sklearn compatibility)."""
+        return {
+            'n_estimators': self.n_estimators,
+            'max_depth': self.max_depth,
+            'min_samples_split': self.min_samples_split,
+            'max_features': self.max_features,
+            'bootstrap': self.bootstrap,
+            'store_probs': self.store_probs
+        }
+
+    def set_params(self, **params):
+        """Set the parameters of this estimator (sklearn compatibility)."""
+        for key, value in params.items():
+            setattr(self, key, value)
+        return self
+>>>>>>> c503bcd (Added hyperparameter tuning. Plotting needs improvement)
