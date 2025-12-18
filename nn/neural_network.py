@@ -63,6 +63,11 @@ class NeuralNetwork:
 
         scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=3)
 
+        # Track learning curves
+        self.train_acc_history = []
+        self.val_acc_history = []
+        self.train_loss_history = []
+        self.val_loss_history = []
 
         best_val_loss = float('inf')
         wait = 0
@@ -92,18 +97,31 @@ class NeuralNetwork:
 
             self.model.eval()
             val_loss = 0.0
+            val_correct = 0
+            val_total = 0
             with torch.no_grad():
                 for X_batch, y_batch in self.val_loader:
                     logits = self.model(X_batch)
                     loss = criterion(logits, y_batch)
                     val_loss += loss.item() * X_batch.size(0)
+                    
+                    preds = (torch.sigmoid(logits) >= 0.5).float()
+                    val_correct += (preds == y_batch).sum().item()
+                    val_total += y_batch.size(0)
 
             val_loss /= len(self.val_loader.dataset)
+            val_acc = val_correct / val_total * 100
+
+            # Record history
+            self.train_acc_history.append(train_acc)
+            self.val_acc_history.append(val_acc)
+            self.train_loss_history.append(avg_loss)
+            self.val_loss_history.append(val_loss)
 
             scheduler.step(val_loss)
 
             print(f"Epoch {epoch+1}/{epochs} | Train Loss: {avg_loss:.4f} | "
-                  f"Train Acc: {train_acc:.2f}% | Val Loss: {val_loss:.4f}")
+                  f"Train Acc: {train_acc:.2f}% | Val Loss: {val_loss:.4f} | Val Acc: {val_acc:.2f}%")
 
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
@@ -256,6 +274,37 @@ class NeuralNetwork:
             ax6.set_title('TPR and FPR vs Threshold')
             ax6.legend()
             ax6.grid(True, alpha=0.3)
+        
+        plt.tight_layout()
+        plt.show()
+    
+    def plot_learning_curves(self):
+        """Plot training and validation accuracy/loss curves"""
+        if not hasattr(self, 'train_acc_history'):
+            print("No training history available. Train the model first.")
+            return
+        
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
+        
+        epochs = range(1, len(self.train_acc_history) + 1)
+        
+        # Plot accuracy
+        ax1.plot(epochs, self.train_acc_history, marker='o', label='Training Accuracy', linewidth=2)
+        ax1.plot(epochs, self.val_acc_history, marker='s', label='Validation Accuracy', linewidth=2)
+        ax1.set_xlabel('Epoch')
+        ax1.set_ylabel('Accuracy (%)')
+        ax1.set_title('Learning Curves - Accuracy')
+        ax1.legend()
+        ax1.grid(True, alpha=0.3)
+        
+        # Plot loss
+        ax2.plot(epochs, self.train_loss_history, marker='o', label='Training Loss', linewidth=2)
+        ax2.plot(epochs, self.val_loss_history, marker='s', label='Validation Loss', linewidth=2)
+        ax2.set_xlabel('Epoch')
+        ax2.set_ylabel('Loss')
+        ax2.set_title('Learning Curves - Loss')
+        ax2.legend()
+        ax2.grid(True, alpha=0.3)
         
         plt.tight_layout()
         plt.show()
