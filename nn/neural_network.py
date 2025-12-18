@@ -22,11 +22,9 @@ class NeuralNetwork:
             nn.ReLU(),
             nn.Linear(16, 1)
         )
-
-        self.dataset_path = "../dataset/diabetes_binary_5050split_health_indicators_BRFSS2023.csv"
     
-    def load_data(self):
-        dataset = pd.read_csv(self.dataset_path).values.astype("float32")
+    def load_data(self, path):
+        dataset = pd.read_csv(path).values.astype("float32")
 
         X = torch.tensor(dataset[:, 1:-2])
         y = torch.tensor(dataset[:, 0]).unsqueeze(1)
