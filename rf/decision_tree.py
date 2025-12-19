@@ -174,7 +174,6 @@ class DecisionTree():
         y = y_pd.to_numpy()
         self.classes = np.unique(y)
         self.class_to_index = {c: i for i, c in enumerate(self.classes)}
-<<<<<<< HEAD
 
         n_samples, n_features = X.shape
         self.n_features = self.n_features or n_features     # eliminates n_features == None
@@ -187,23 +186,8 @@ class DecisionTree():
         predictions = [np.argmax(p) for p in predictions]
         return np.array(predictions)
 
-    def predict_proba(self, X: np.ndarray) -> np.ndarray:
-=======
-
-        n_samples, n_features = X.shape
-        self.n_features = self.n_features or n_features     # eliminates n_features == None
-
-        self.root = self._build_tree(X, y)
-
-    def predict(self, X_pd:pd.DataFrame) -> np.ndarray:
-        X = X_pd.to_numpy()
-        predictions = [self._traverse_tree(x, self.root) for x in X]
-        predictions = [np.argmax(p) for p in predictions]
-        return np.array(predictions)
-
     def predict_proba(self, X_pd: pd.DataFrame) -> np.ndarray:
         X = X_pd.to_numpy()
->>>>>>> c503bcd (Added hyperparameter tuning. Plotting needs improvement)
         results = []
         for x in X:
             value = self._traverse_tree(x, self.root)
@@ -220,9 +204,7 @@ class DecisionTree():
             
             results.append(prob)
 
-<<<<<<< HEAD
         return np.vstack(results)
-=======
         return np.vstack(results)
 
     def get_params(self, deep=True):
@@ -238,4 +220,3 @@ class DecisionTree():
         for key, value in params.items():
             setattr(self, key, value)
         return self
->>>>>>> c503bcd (Added hyperparameter tuning. Plotting needs improvement)

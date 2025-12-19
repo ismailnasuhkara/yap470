@@ -119,8 +119,6 @@ class RandomForest():
 
         return results
 
-<<<<<<< HEAD
-=======
     def get_params(self, deep=True):
         """Get parameters for this estimator (sklearn compatibility)."""
         return {
@@ -137,4 +135,3 @@ class RandomForest():
         for key, value in params.items():
             setattr(self, key, value)
         return self
->>>>>>> c503bcd (Added hyperparameter tuning. Plotting needs improvement)

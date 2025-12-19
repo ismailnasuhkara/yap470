@@ -87,7 +87,7 @@ class MetricTracker:
     def clear_cv_history(self) -> None:
         self.cv_history = []
 
-    def cv_to_df(self, refit: str = "recall") -> pd.DataFrame:
+    def cv_to_df(self, refit: str = "f1") -> pd.DataFrame:
         out = pd.DataFrame(self.cv_history) if self.cv_history else pd.DataFrame()
         out = out.sort_values(by=refit, ascending=False)
         return out
