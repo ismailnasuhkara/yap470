@@ -24,14 +24,6 @@ class RandomForest():
     def _resolve_max_features(self, n_features: int) -> int:
         if self.max_features == "sqrt":
             return max(1, int(np.sqrt(n_features)))
-        elif self.max_features == "log2":
-            return max(1, int(np.log2(n_features)))
-        elif isinstance(self.max_features, float):
-            return max(1, int(self.max_features * n_features))
-        elif isinstance(self.max_features, int):
-            return min(n_features, self.max_features)
-        elif self.max_features is None:
-            return n_features
         else:
             raise ValueError(f"Invalid max_features: {self.max_features}")
 
