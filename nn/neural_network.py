@@ -1,310 +1,239 @@
 import pandas as pd
 import torch
-from torch.utils.data import TensorDataset, DataLoader, random_split
 import torch.nn as nn
 import torch.optim as optim
+from torch.utils.data import TensorDataset, DataLoader, random_split
+from sklearn.metrics import (
+    accuracy_score, precision_score, recall_score,
+    f1_score, roc_auc_score, confusion_matrix, roc_curve
+)
+from torch.optim.lr_scheduler import ReduceLROnPlateau
 import matplotlib.pyplot as plt
-import seaborn as sns
-from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix, roc_auc_score, roc_curve
-from torch.optim.lr_scheduler import ReduceLROnPlateau, StepLR
+from sklearn.model_selection import train_test_split
+from torch.utils.data import Subset
+
+
 
 class NeuralNetwork:
     def __init__(self):
-        self.model = nn.Sequential(
-            nn.Linear(20, 32),
-            nn.Dropout(0.3),
-            nn.ReLU(),
-            nn.Linear(32, 16),
-            nn.Dropout(0.3),
-            nn.ReLU(),
-            nn.Linear(16, 16),
-            nn.Dropout(0.3),
-            nn.ReLU(),
-            nn.Linear(16, 1)
+        self.model = None
+        self.use_l1 = False
+        self.l1_lambda = 0.0
+        self.input_dim = None
+
+    # ---------- MODEL ----------
+    def build_model(self, input_dim, dropout=True, regularize=True):
+        self.input_dim = input_dim
+        self.use_l1 = regularize
+        self.l1_lambda = 1e-5 if regularize else 0.0
+
+        if dropout:
+            self.model = nn.Sequential(
+                nn.Linear(self.input_dim, 32),
+                nn.ReLU(),
+                nn.Dropout(0.2),
+                nn.Linear(32, 16),
+                nn.ReLU(),
+                nn.Dropout(0.2),
+                nn.Linear(16, 1)
+            )
+        else:
+            self.model = nn.Sequential(
+                nn.Linear(input_dim, 32),
+                nn.ReLU(),
+                nn.Linear(32, 16),
+                nn.ReLU(),
+                nn.Linear(16, 1)
+            )
+
+    # ---------- DATA ----------
+    def load_data(self, path, batch_size=32):
+        if self.model is None:
+            raise ValueError("Model must be built before loading data.")
+
+        df = pd.read_csv(path).dropna()
+        data = df.values.astype("float32")
+
+        X = data[:, :-1]
+        y = data[:, -1].reshape(-1, 1)
+
+        # safety check
+        if X.shape[1] != self.input_dim:
+            raise ValueError(
+                f"Input dim mismatch: model expects {self.input_dim}, "
+                f"data has {X.shape[1]}"
+            )
+
+        X = torch.tensor(X)
+        y = torch.tensor(y)
+
+        dataset = TensorDataset(X, y)
+
+        n = len(dataset)
+        train_size = int(0.7 * n)
+        val_size   = int(0.15 * n)
+        test_size  = n - train_size - val_size
+
+        train_ds, val_ds, test_ds = random_split(
+            dataset, [train_size, val_size, test_size]
         )
-    
-    def load_data(self, path):
-        dataset = pd.read_csv(path).values.astype("float32")
 
-        X = torch.tensor(dataset[:, 1:-2])
-        y = torch.tensor(dataset[:, 0]).unsqueeze(1)
+        self.train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True)
+        self.val_loader   = DataLoader(val_ds,   batch_size=batch_size)
+        self.test_loader  = DataLoader(test_ds,  batch_size=batch_size)
 
-        num_samples = len(X)
-        indices = torch.randperm(num_samples)
+    # ---------- TRAIN ----------
+    def train(self, epochs=30):
+        if self.model is None:
+            raise ValueError("Model not built.")
 
-        train_size = int(0.8 * num_samples)
-        train_idx = indices[:train_size]
-        test_idx  = indices[train_size:]
-
-        X_train, y_train = X[train_idx], y[train_idx]
-        X_test,  y_test  = X[test_idx],  y[test_idx]
-
-        X_mean = X_train.mean(dim=0, keepdim=True)
-        X_std  = X_train.std(dim=0, keepdim=True)
-
-        X_train = (X_train - X_mean) / X_std
-        X_test  = (X_test - X_mean) / X_std
-
-        val_size = int(0.2 * train_size)
-        train_size = train_size - val_size
-
-        full_train_ds = TensorDataset(X_train, y_train)
-        train_ds, val_ds = random_split(full_train_ds, [train_size, val_size])
-
-        test_ds = TensorDataset(X_test, y_test)
-
-        self.train_loader = DataLoader(train_ds, batch_size=32, shuffle=True)
-        self.val_loader   = DataLoader(val_ds,   batch_size=32)
-        self.test_loader  = DataLoader(test_ds,  batch_size=32)
-
-    def train(self, epochs=5, learning_rate=0.001, patience=5):
         criterion = nn.BCEWithLogitsLoss()
-        optimizer = optim.Adam(self.model.parameters(), lr=learning_rate, weight_decay=0.0001)
+        optimizer = optim.Adam(self.model.parameters(), lr=3e-4)
 
-        scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=3)
+        scheduler = ReduceLROnPlateau(
+            optimizer,
+            mode="max",
+            factor=0.5,
+            patience=3
+        )
 
-        # Track learning curves
-        self.train_acc_history = []
-        self.val_acc_history = []
-        self.train_loss_history = []
-        self.val_loss_history = []
-
-        best_val_loss = float('inf')
-        wait = 0
-        best_model_state = None
+        train_acc_hist, val_acc_hist = [], []
+        train_f1_hist,  val_f1_hist  = [], []
 
         for epoch in range(epochs):
+            # ----- training -----
             self.model.train()
-            total_loss = 0.0
-            correct = 0
-            total = 0
+            correct, total = 0, 0
+            train_preds, train_labels = [], []
 
-            for X_batch, y_batch in self.train_loader:
+            for Xb, yb in self.train_loader:
                 optimizer.zero_grad()
-                logits = self.model(X_batch)
-                loss = criterion(logits, y_batch)
+                logits = self.model(Xb)
+                loss = criterion(logits, yb)
+
+                if self.use_l1:
+                    l1_penalty = sum(p.abs().sum() for p in self.model.parameters())
+                    loss = loss + self.l1_lambda * l1_penalty
+
                 loss.backward()
                 optimizer.step()
 
-                total_loss += loss.item() * X_batch.size(0)
-
                 preds = (torch.sigmoid(logits) >= 0.5).float()
-                correct += (preds == y_batch).sum().item()
-                total += y_batch.size(0)
+                correct += (preds == yb).sum().item()
+                total += yb.size(0)
 
-            train_acc = correct / total * 100
-            avg_loss = total_loss / total
+                train_preds.append(preds)
+                train_labels.append(yb)
 
+            train_acc = correct / total
+            train_f1 = f1_score(
+                torch.cat(train_labels).cpu().numpy(),
+                torch.cat(train_preds).cpu().numpy(),
+                zero_division=0
+            )
+
+            # ----- validation -----
             self.model.eval()
-            val_loss = 0.0
-            val_correct = 0
-            val_total = 0
+            correct, total = 0, 0
+            val_preds, val_labels = [], []
+
             with torch.no_grad():
-                for X_batch, y_batch in self.val_loader:
-                    logits = self.model(X_batch)
-                    loss = criterion(logits, y_batch)
-                    val_loss += loss.item() * X_batch.size(0)
-                    
+                for Xb, yb in self.val_loader:
+                    logits = self.model(Xb)
                     preds = (torch.sigmoid(logits) >= 0.5).float()
-                    val_correct += (preds == y_batch).sum().item()
-                    val_total += y_batch.size(0)
 
-            val_loss /= len(self.val_loader.dataset)
-            val_acc = val_correct / val_total * 100
+                    correct += (preds == yb).sum().item()
+                    total += yb.size(0)
 
-            # Record history
-            self.train_acc_history.append(train_acc)
-            self.val_acc_history.append(val_acc)
-            self.train_loss_history.append(avg_loss)
-            self.val_loss_history.append(val_loss)
+                    val_preds.append(preds)
+                    val_labels.append(yb)
 
-            scheduler.step(val_loss)
+            val_acc = correct / total
+            val_f1 = f1_score(
+                torch.cat(val_labels).cpu().numpy(),
+                torch.cat(val_preds).cpu().numpy(),
+                zero_division=0
+            )
 
-            print(f"Epoch {epoch+1}/{epochs} | Train Loss: {avg_loss:.4f} | "
-                  f"Train Acc: {train_acc:.2f}% | Val Loss: {val_loss:.4f} | Val Acc: {val_acc:.2f}%")
+            scheduler.step(val_f1)
 
-            if val_loss < best_val_loss:
-                best_val_loss = val_loss
-                wait = 0
-                best_model_state = self.model.state_dict()
-            else:
-                wait += 1
-                if wait >= patience:
-                    print("Early stopping triggered.")
-                    break
+            train_acc_hist.append(train_acc)
+            val_acc_hist.append(val_acc)
+            train_f1_hist.append(train_f1)
+            val_f1_hist.append(val_f1)
 
-        if best_model_state is not None:
-            self.model.load_state_dict(best_model_state)
+            print(
+                f"Epoch {epoch+1:02d}/{epochs} | "
+                f"Train Acc: {train_acc*100:.2f}% | "
+                f"Val Acc: {val_acc*100:.2f}% | "
+                f"Train F1: {train_f1:.4f} | "
+                f"Val F1: {val_f1:.4f}"
+            )
 
-    def evaluate(self, thresholds=[0.3, 0.4, 0.5, 0.6, 0.7]):
+        # ----- learning curves -----
+        epochs_range = range(1, epochs + 1)
+
+        plt.figure(figsize=(12, 5))
+
+        plt.subplot(1, 2, 1)
+        plt.plot(epochs_range, train_acc_hist, label="Train Accuracy")
+        plt.plot(epochs_range, val_acc_hist, label="Validation Accuracy")
+        plt.legend()
+        plt.grid(alpha=0.3)
+
+        plt.subplot(1, 2, 2)
+        plt.plot(epochs_range, train_f1_hist, label="Train F1")
+        plt.plot(epochs_range, val_f1_hist, label="Validation F1")
+        plt.legend()
+        plt.grid(alpha=0.3)
+
+        plt.tight_layout()
+        plt.show()
+
+    # ---------- EVAL ----------
+    def evaluate(self):
+        if self.model is None:
+            raise ValueError("Model not built.")
+
         self.model.eval()
-        all_probs = []
-        all_labels = []
+        probs, preds, labels = [], [], []
 
         with torch.no_grad():
-            for X_batch, y_batch in self.test_loader:
-                logits = self.model(X_batch)
-                probs = torch.sigmoid(logits)
+            for Xb, yb in self.test_loader:
+                logits = self.model(Xb)
+                prob = torch.sigmoid(logits)
 
-                all_probs.append(probs)
-                all_labels.append(y_batch)
+                probs.append(prob)
+                preds.append((prob >= 0.5).float())
+                labels.append(yb)
 
-        all_probs = torch.cat(all_probs).cpu().numpy().ravel()
-        all_labels = torch.cat(all_labels).cpu().numpy().ravel()
+        probs  = torch.cat(probs).cpu().numpy()
+        preds  = torch.cat(preds).cpu().numpy()
+        labels = torch.cat(labels).cpu().numpy()
 
-        results = []
-        for threshold in thresholds:
-            preds = (all_probs >= threshold).astype(int)
+        acc  = accuracy_score(labels, preds)
+        prec = precision_score(labels, preds, zero_division=0)
+        rec  = recall_score(labels, preds, zero_division=0)
+        f1   = f1_score(labels, preds, zero_division=0)
+        auc  = roc_auc_score(labels, probs)
 
-            accuracy = accuracy_score(all_labels, preds)
-            precision = precision_score(all_labels, preds, zero_division=0)
-            recall = recall_score(all_labels, preds, zero_division=0)
-            f1 = f1_score(all_labels, preds, zero_division=0)
+        tn, fp, fn, tp = confusion_matrix(labels, preds).ravel()
 
-            tn, fp, fn, tp = confusion_matrix(all_labels, preds).ravel()
-            specificity = tn / (tn + fp) if (tn + fp) > 0 else 0
-            
-            results.append({
-                'Threshold': threshold,
-                'Accuracy': accuracy,
-                'Precision': precision,
-                'Recall': recall,
-                'F1-Score': f1,
-                'Specificity': specificity,
-                'TP': tp,
-                'TN': tn,
-                'FP': fp,
-                'FN': fn
-            })
+        print(f"Accuracy: {acc:.4f}")
+        print(f"Precision: {prec:.4f}")
+        print(f"Recall: {rec:.4f}")
+        print(f"F1: {f1:.4f}")
+        print(f"ROC-AUC: {auc:.4f}")
+        print(f"TP={tp}, FP={fp}, FN={fn}, TN={tn}")
         
-        results_df = pd.DataFrame(results)
-        
-        roc_auc = roc_auc_score(all_labels, all_probs)
-
-        print("\n" + "="*80)
-        print("EVALUATION RESULTS ON TEST SET")
-        print("="*80)
-        print(f"\nROC-AUC Score: {roc_auc:.4f}\n")
-        print(results_df.to_string(index=False))
-        print("="*80 + "\n")
-        
-        return results_df, all_probs, all_labels, roc_auc
-    
-    def plot_threshold_analysis(self, results_df, all_probs=None, all_labels=None):
-        plot_roc = all_probs is not None and all_labels is not None
-        
-        if plot_roc:
-            fig, axes = plt.subplots(2, 3, figsize=(18, 10))
-        else:
-            fig, axes = plt.subplots(2, 2, figsize=(14, 10))
-            axes = axes.flatten()
-        
-        # Plot 1: Main metrics
-        ax1 = axes[0, 0] if plot_roc else axes[0]
-        metrics = ['Accuracy', 'Precision', 'Recall', 'F1-Score']
-        for metric in metrics:
-            ax1.plot(results_df['Threshold'], results_df[metric], marker='o', label=metric)
-        ax1.set_xlabel('Threshold')
-        ax1.set_ylabel('Score')
-        ax1.set_title('Performance Metrics vs Threshold')
-        ax1.legend()
-        ax1.grid(True, alpha=0.3)
-        
-        # Plot 2: Precision-Recall tradeoff
-        ax2 = axes[0, 1] if plot_roc else axes[1]
-        ax2.plot(results_df['Threshold'], results_df['Precision'], marker='o', label='Precision', color='blue')
-        ax2.plot(results_df['Threshold'], results_df['Recall'], marker='s', label='Recall', color='red')
-        ax2.plot(results_df['Threshold'], results_df['Specificity'], marker='^', label='Specificity', color='green')
-        ax2.set_xlabel('Threshold')
-        ax2.set_ylabel('Score')
-        ax2.set_title('Precision-Recall-Specificity Tradeoff')
-        ax2.legend()
-        ax2.grid(True, alpha=0.3)
-        
-        # Plot 3: Confusion matrix components
-        ax3 = axes[1, 0] if plot_roc else axes[2]
-        width = 0.02
-        x = results_df['Threshold']
-        ax3.bar(x - 1.5*width, results_df['TP'], width, label='True Positive', color='green')
-        ax3.bar(x - 0.5*width, results_df['TN'], width, label='True Negative', color='lightgreen')
-        ax3.bar(x + 0.5*width, results_df['FP'], width, label='False Positive', color='orange')
-        ax3.bar(x + 1.5*width, results_df['FN'], width, label='False Negative', color='red')
-        ax3.set_xlabel('Threshold')
-        ax3.set_ylabel('Count')
-        ax3.set_title('Confusion Matrix Components')
-        ax3.legend()
-        ax3.grid(True, alpha=0.3, axis='y')
-        
-        # Plot 4: F1-Score highlighting best threshold
-        ax4 = axes[1, 1] if plot_roc else axes[3]
-        ax4.plot(results_df['Threshold'], results_df['F1-Score'], marker='o', linewidth=2, color='purple')
-        best_idx = results_df['F1-Score'].idxmax()
-        best_threshold = results_df.loc[best_idx, 'Threshold']
-        best_f1 = results_df.loc[best_idx, 'F1-Score']
-        ax4.scatter([best_threshold], [best_f1], color='red', s=200, zorder=5, label=f'Best: {best_threshold}')
-        ax4.set_xlabel('Threshold')
-        ax4.set_ylabel('F1-Score')
-        ax4.set_title('F1-Score vs Threshold (Best Threshold Highlighted)')
-        ax4.legend()
-        ax4.grid(True, alpha=0.3)
-        
-        # Plot 5: ROC Curve
-        if plot_roc:
-            ax5 = axes[0, 2]
-            fpr, tpr, thresholds_roc = roc_curve(all_labels, all_probs)
-            roc_auc = roc_auc_score(all_labels, all_probs)
-            
-            ax5.plot(fpr, tpr, color='darkorange', lw=2, label=f'ROC curve (AUC = {roc_auc:.4f})')
-            ax5.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--', label='Random Classifier')
-            ax5.set_xlim([0.0, 1.0])
-            ax5.set_ylim([0.0, 1.05])
-            ax5.set_xlabel('False Positive Rate')
-            ax5.set_ylabel('True Positive Rate')
-            ax5.set_title('ROC Curve')
-            ax5.legend(loc="lower right")
-            ax5.grid(True, alpha=0.3)
-            
-            # Plot 6: Threshold vs TPR/FPR
-            ax6 = axes[1, 2]
-            step = max(1, len(thresholds_roc) // 50)
-            ax6.plot(thresholds_roc[::step], tpr[::step], marker='o', label='True Positive Rate', markersize=4)
-            ax6.plot(thresholds_roc[::step], fpr[::step], marker='s', label='False Positive Rate', markersize=4)
-            ax6.set_xlabel('Threshold')
-            ax6.set_ylabel('Rate')
-            ax6.set_title('TPR and FPR vs Threshold')
-            ax6.legend()
-            ax6.grid(True, alpha=0.3)
-        
-        plt.tight_layout()
+        fpr, tpr, _ = roc_curve(labels, probs)
+        plt.figure()
+        plt.plot(fpr, tpr, label=f"ROC curve (AUC = {auc:.4f})")
+        plt.plot([0, 1], [0, 1], linestyle="--")
+        plt.xlabel("False Positive Rate")
+        plt.ylabel("True Positive Rate")
+        plt.title("ROC Curve")
+        plt.legend(loc="lower right")
+        plt.grid(True)
         plt.show()
-    
-    def plot_learning_curves(self):
-        """Plot training and validation accuracy/loss curves"""
-        if not hasattr(self, 'train_acc_history'):
-            print("No training history available. Train the model first.")
-            return
-        
-        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
-        
-        epochs = range(1, len(self.train_acc_history) + 1)
-        
-        # Plot accuracy
-        ax1.plot(epochs, self.train_acc_history, marker='o', label='Training Accuracy', linewidth=2)
-        ax1.plot(epochs, self.val_acc_history, marker='s', label='Validation Accuracy', linewidth=2)
-        ax1.set_xlabel('Epoch')
-        ax1.set_ylabel('Accuracy (%)')
-        ax1.set_title('Learning Curves - Accuracy')
-        ax1.legend()
-        ax1.grid(True, alpha=0.3)
-        
-        # Plot loss
-        ax2.plot(epochs, self.train_loss_history, marker='o', label='Training Loss', linewidth=2)
-        ax2.plot(epochs, self.val_loss_history, marker='s', label='Validation Loss', linewidth=2)
-        ax2.set_xlabel('Epoch')
-        ax2.set_ylabel('Loss')
-        ax2.set_title('Learning Curves - Loss')
-        ax2.legend()
-        ax2.grid(True, alpha=0.3)
-        
-        plt.tight_layout()
-        plt.show()
+
